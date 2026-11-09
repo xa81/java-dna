@@ -811,7 +811,7 @@ docker run --rm -v "$PWD":/src -v dna-m2:/root/.m2 -w /src maven:3.9-eclipse-tem
 
 | Test | Beschrijving |
 |------|-------------|
-| `ConformanceTest` | Voert alle 126 conformiteitsfixtures van php-dna uit (`src/test/resources/conformance/`): de verzonden verzoeken en de geretourneerde waarden moeten overeenkomen met php-dna |
+| `ConformanceTest` | Voert alle 134 conformiteitsfixtures van php-dna uit (`src/test/resources/conformance/`): de verzonden verzoeken en de geretourneerde waarden moeten overeenkomen met php-dna |
 | `HttpLayerTest` | Headers, querystrings, JSON-bodies, testmodus, pacing, het echte `java.net.http`-transport |
 | `ErrorMappingTest` | Vertaling van gatewayfouten, transportfouten, validatiefouten |
 | `TelemetryTest` | Maskeren van inloggegevens, classificatie, minimale modus, structuur van gebeurtenissen |

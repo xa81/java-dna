@@ -44,5 +44,6 @@ public class Forwarding {
  * {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Standard"}}
  * (no forwarding set: {"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}})
  * deleteForwarding:
- * {"result": "OK", "data": {"DomainName": "example.com"}}
+ * {"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}
+ * (nothing to remove: "Removed": false)
  */

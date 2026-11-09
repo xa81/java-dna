@@ -222,6 +222,8 @@ before sending (see `validateContact`).
 }
 ```
 The register endpoint answers with a short receipt; call `getDetails` afterwards for the full record.
+When the gateway refuses the order (`"success": false`), the result is an error with code
+`REGISTER_DOMAIN` and the gateway's message.
 </details>
 
 ### Domain Renewal
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+A refused renewal returns an error with code `RENEW_DOMAIN`.
 </details>
 
 ### Domain Transfer
 
 ```java
+// Contacts are never sent with a transfer: the registrar takes them over with the domain
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Check first whether the domain can be transferred with this auth code
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // outgoing
 <details>
 <summary>Sample Output</summary>
 
-`transfer` returns the same shape as registration. `checkTransfer`:
+`transfer` returns the same shape as registration (an error with code `TRANSFER_DOMAIN` when the
+gateway refuses the transfer). `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Modify Domain Privacy
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// The status may also be text, as panels store it: "1", "true", "on", "yes" enable
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+The optional third argument (`reason`) is accepted for php-dna compatibility but not sent: the
+gateway has no such field.
 
 <details>
 <summary>Sample Output</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+Contact types are matched case-insensitively (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`); any other type the registry returns is kept after these four.
 `saveContacts` returns `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 Names may be `""` / `"@"` (apex), a label (`"www"`) or a full name (`"www.example.com."`).
 Supported types: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. TTL is
 1..86400 seconds. Zone calls are kept at least one second apart because the gateway answers
-HTTP 429 to bursts (`setZoneMinInterval(seconds)` changes the gap).
+HTTP 429 to bursts (`setZoneMinInterval(seconds)` changes the gap). The results report the
+upper-cased type and the clamped TTL that were sent. When the automatic apply fails, the write
+returns the apply error: the change is staged but not live yet.
 
 <details>
 <summary>Sample Output</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Without forwarding: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Without forwarding (the gateway's `Redirect information not found`):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Any other
+error, such as an unknown domain, is returned as an error.
+`deleteForwarding` returns `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`,
+or `"Removed": false` when nothing was set.
 </details>
 
 ### Get Reseller Details and Balance
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+The account reports USD and TRY balances only. For other currencies (EUR, GBP, ...) the result is
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Utilities (no network)
@@ -727,15 +748,20 @@ Network methods never throw for API or network problems; they return an error en
 ```
 
 - `Code` is `API_<HTTP status>` for gateway errors (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  A 301/302 answer means wrong credentials (`Invalid API credentials`).
+  When the gateway sent its own error code, it is kept as `GatewayCode`
+  (e.g. `"GatewayCode": "Dna.DomainService:Domain:10007"`), so "domain not found" can be told apart
+  from other 404s. A 301/302 answer means wrong credentials (`Invalid API credentials`).
 - When the gateway lists per-field validation errors, `Details` names the fields, e.g.
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - An empty error body becomes `HTTP 429 - Too Many Requests` and similar.
-- Timeouts, DNS and TLS failures are errors too, never an empty success. A timeout reads
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` with code `API_28`;
-  other transport failures read `Curl error during request: ...` (curl error numbers are kept so
-  codes match php-dna; `getParsedResponseData()` shows them as `CURL_<n>`).
-- Library-side checks use their own codes: `RESPONSE` (empty answer), `DOMAIN_RENEW`,
+- Timeouts, DNS and TLS failures are errors too, never an empty success. Their code is
+  `CURL_<n>` with curl's error numbers, as in php-dna: a timeout is `CURL_28` and reads
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`; other transport
+  failures (`CURL_6` DNS, `CURL_7` connection refused, `CURL_35`/`CURL_60` TLS, `CURL_56` reset)
+  read `Curl error during request: ...`.
+- A gateway refusal (`"success": false`) returns `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` or
+  `RENEW_DOMAIN` with the gateway's message.
+- Library-side checks use their own codes: `RESPONSE` (empty answer), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Diagnostics of the last call:
@@ -811,7 +837,7 @@ docker run --rm -v "$PWD":/src -v dna-m2:/root/.m2 -w /src maven:3.9-eclipse-tem
 
 | Test | Description |
 |------|-------------|
-| `ConformanceTest` | Runs all 126 php-dna conformance fixtures (`src/test/resources/conformance/`): the requests sent and the values returned must match php-dna |
+| `ConformanceTest` | Runs all 134 php-dna conformance fixtures (`src/test/resources/conformance/`): the requests sent and the values returned must match php-dna |
 | `HttpLayerTest` | Headers, query strings, JSON bodies, test mode, pacing, the real `java.net.http` transport |
 | `ErrorMappingTest` | Gateway error mapping, transport failures, validation errors |
 | `TelemetryTest` | Credential masking, classification, minimal mode, event shape |

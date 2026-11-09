@@ -42,7 +42,7 @@ public class ValidateContact {
  *
  * {
  *     "FirstName": "Jo",
- *     "Phone": "12025550100",
+ *     "Phone": "2025550100",
  *     "Country": "TR",
  *     "City": "ISTANBUL",
  *     "Fax": "2121234567",
@@ -50,7 +50,7 @@ public class ValidateContact {
  *     "AddressLine1": "Addres yok",
  *     "State": "ISTANBUL",
  *     "ZipCode": "34000",
- *     "PhoneCountryCode": "90",
+ *     "PhoneCountryCode": "1",
  *     "FaxCountryCode": "90"
  * }
  */

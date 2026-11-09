@@ -810,7 +810,7 @@ docker run --rm -v "$PWD":/src -v dna-m2:/root/.m2 -w /src maven:3.9-eclipse-tem
 
 | 测试 | 说明 |
 |------|-------------|
-| `ConformanceTest` | 运行全部 126 个 php-dna 一致性测试用例（`src/test/resources/conformance/`）：发送的请求和返回的值必须与 php-dna 一致 |
+| `ConformanceTest` | 运行全部 134 个 php-dna 一致性测试用例（`src/test/resources/conformance/`）：发送的请求和返回的值必须与 php-dna 一致 |
 | `HttpLayerTest` | 请求头、查询字符串、JSON 请求体、测试模式、请求节流，以及真实的 `java.net.http` 传输层 |
 | `ErrorMappingTest` | 网关错误映射、传输失败、校验错误 |
 | `TelemetryTest` | 凭据屏蔽、分类、精简模式、事件结构 |

@@ -47,4 +47,6 @@ public class GetCurrentBalance {
  *     "CurrencyName": "USD",
  *     "CurrencySymbol": "$"
  * }
+ * The account reports USD and TRY only; EUR or GBP answer
+ * {"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", ...}
  */

@@ -4,9 +4,10 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-11-09
+## [1.0.0] - Unreleased
 
-First release: a faithful Java port of [php-dna](https://github.com/domainreseller/php-dna) 4.0.4.
+First release: a faithful Java port of [php-dna](https://github.com/domainreseller/php-dna)
+(4.0.4 plus the fixes of php-dna commit f946d69).
 
 ### Added
 
@@ -22,14 +23,26 @@ First release: a faithful Java port of [php-dna](https://github.com/domainresell
 - HTTP layer on `java.net.http` with the `DomainNameAPI-Java/1.0.0` User-Agent, 30 s / 10 s
   timeouts, optional TLS verification bypass, PHP-compatible query strings and JSON bodies,
   one-second pacing of DNS zone calls, and a pluggable `HttpTransport`.
-- php-dna error mapping: `API_<status>` codes, credential redirects, empty bodies, ABP
-  boilerplate messages, flattened validation errors, and transport failures as errors
-  (`API_28` timeout, `CURL_<n>` in the parsed response).
+- php-dna error mapping: `API_<status>` codes with the gateway's own code as `GatewayCode`,
+  credential redirects, empty bodies, ABP boilerplate messages (never replaced by the raw body),
+  flattened validation errors, and transport failures as errors with `CURL_<errno>` codes
+  (`CURL_28` timeout).
+- Refusals are errors, not false successes: `success:false` from register, transfer and renew
+  returns `REGISTER_DOMAIN` / `TRANSFER_DOMAIN` / `RENEW_DOMAIN`; a failed automatic zone apply
+  returns the apply error; `getCurrentBalance` returns `BALANCE` for currencies the account does
+  not report.
+- Transfers never send contacts (`contacts: []`); the API has no contacts parameter.
+- Forwarding: only "Redirect information not found" means "not set"; `deleteForwarding` reports
+  `Removed: true/false`.
+- `modifyPrivacyProtectionStatus` accepts the status as text (`"1"`, `"true"`, `"on"`, `"yes"`);
+  the reason is not sent.
+- Contact types are matched case-insensitively and unknown types are kept; phone numbers with
+  their own `+` country code keep it; a missing State falls back to the city.
 - Sentry telemetry ported from php-dna (credential masking, ignored errors, performance
   sampling, minimal mode, `application=DomainNameAPI-Java`); the built-in DSN is empty until the
   Java Sentry project exists, and `setTelemetryDsn` overrides it.
 - Built-in JSON codec (`Json`) — no runtime dependencies.
-- Conformance test running all 126 php-dna fixtures, plus unit tests for the HTTP layer, error
+- Conformance test running all 134 php-dna fixtures, plus unit tests for the HTTP layer, error
   mapping, telemetry and utilities.
 - Runnable examples for every php-dna example plus DNS zone, forwarding, transfer approval,
   `isTrTLD` and `validateContact`.

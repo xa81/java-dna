@@ -811,7 +811,7 @@ docker run --rm -v "$PWD":/src -v dna-m2:/root/.m2 -w /src maven:3.9-eclipse-tem
 
 | الاختبار | الوصف |
 |------|-------------|
-| `ConformanceTest` | يشغّل جميع حالات المطابقة الـ 126 الخاصة بـ php-dna ‏(`src/test/resources/conformance/`): يجب أن تتطابق الطلبات المُرسَلة والقيم المُعادة مع php-dna |
+| `ConformanceTest` | يشغّل جميع حالات المطابقة الـ 134 الخاصة بـ php-dna ‏(`src/test/resources/conformance/`): يجب أن تتطابق الطلبات المُرسَلة والقيم المُعادة مع php-dna |
 | `HttpLayerTest` | الترويسات، وسلاسل الاستعلام، وأجسام JSON، ووضع الاختبار، وتنظيم الإيقاع، وطبقة النقل الفعلية `java.net.http` |
 | `ErrorMappingTest` | ربط أخطاء البوابة، وإخفاقات النقل، وأخطاء التحقق |
 | `TelemetryTest` | إخفاء بيانات الاعتماد، والتصنيف، والوضع المختصر، وبنية الحدث |

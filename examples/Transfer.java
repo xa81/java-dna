@@ -21,6 +21,7 @@ public class Transfer {
 
         DomainNameApi dna = new DomainNameApi(resellerId, apiKey);
 
+        // Transfers never send contacts: the registrar takes them over with the domain.
         Map<String, Object> result = dna.transfer("example.com", "ABC123XYZ456", 1);
         System.out.println(Json.encodePretty(result));
     }

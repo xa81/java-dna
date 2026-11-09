@@ -810,7 +810,7 @@ docker run --rm -v "$PWD":/src -v dna-m2:/root/.m2 -w /src maven:3.9-eclipse-tem
 
 | Test | Təsvir |
 |------|-------------|
-| `ConformanceTest` | php-dna-nın bütün 126 uyğunluq fiksturunu işə salır (`src/test/resources/conformance/`): göndərilən sorğular və qaytarılan dəyərlər php-dna ilə eyni olmalıdır |
+| `ConformanceTest` | php-dna-nın bütün 134 uyğunluq fiksturunu işə salır (`src/test/resources/conformance/`): göndərilən sorğular və qaytarılan dəyərlər php-dna ilə eyni olmalıdır |
 | `HttpLayerTest` | Başlıqlar, sorğu sətirləri, JSON gövdələri, test rejimi, çağırış tempi, real `java.net.http` nəqliyyat qatı |
 | `ErrorMappingTest` | Gateway xətalarının uyğunlaşdırılması, nəqliyyat xətaları, validasiya xətaları |
 | `TelemetryTest` | Giriş məlumatlarının maskalanması, təsnifat, minimal rejim, hadisə strukturu |

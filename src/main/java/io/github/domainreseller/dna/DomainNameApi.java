@@ -267,10 +267,27 @@ public class DomainNameApi {
      *
      * @param domainName domain
      * @param status     true to enable
-     * @param reason     free text reason
+     * @param reason     kept for php-dna compatibility; not sent (the gateway has no such field)
      * @return {@code {data: {PrivacyProtectionStatus}, result}}
      */
     public Map<String, Object> modifyPrivacyProtectionStatus(String domainName, boolean status, String reason) {
+        return client.modifyPrivacyProtectionStatus(domainName, status, reason);
+    }
+
+    /**
+     * Privacy protection with the status given as text, as panels store it:
+     * {@code "1"}, {@code "true"}, {@code "on"}, {@code "yes"} enable, anything else disables.
+     *
+     * @param domainName domain
+     * @param status     status as text
+     * @return {@code {data: {PrivacyProtectionStatus}, result}}
+     */
+    public Map<String, Object> modifyPrivacyProtectionStatus(String domainName, String status) {
+        return client.modifyPrivacyProtectionStatus(domainName, status, DNARest.DEFAULT_REASON);
+    }
+
+    /** Text status variant with a reason (not sent). */
+    public Map<String, Object> modifyPrivacyProtectionStatus(String domainName, String status, String reason) {
         return client.modifyPrivacyProtectionStatus(domainName, status, reason);
     }
 
@@ -368,30 +385,16 @@ public class DomainNameApi {
     // ================================================================ transfers
 
     /**
-     * Start an incoming transfer.
+     * Start an incoming transfer. Transfers never send contacts: the registrar
+     * handles them, so the request always carries {@code "contacts": []}.
      *
      * @param domainName domain
      * @param eppCode    auth/EPP code
      * @param period     years added by the transfer
-     * @return domain details envelope
+     * @return domain details envelope; ERROR {@code TRANSFER_DOMAIN} when the gateway refuses
      */
     public Map<String, Object> transfer(String domainName, String eppCode, int period) {
-        return client.transfer(domainName, eppCode, period, Collections.emptyMap());
-    }
-
-    /**
-     * Start an incoming transfer. Note: like php-dna's facade, which declares only
-     * three parameters, the contacts are <b>not</b> forwarded; the request is the same
-     * as {@link #transfer(String, String, int)}. Kept for API parity.
-     *
-     * @param domainName domain
-     * @param eppCode    auth/EPP code
-     * @param period     years
-     * @param contacts   ignored (php-dna facade behaviour)
-     * @return domain details envelope
-     */
-    public Map<String, Object> transfer(String domainName, String eppCode, int period, Map<String, ?> contacts) {
-        return transfer(domainName, eppCode, period);
+        return client.transfer(domainName, eppCode, period);
     }
 
     /**

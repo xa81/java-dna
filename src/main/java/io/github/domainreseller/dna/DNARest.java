@@ -113,6 +113,11 @@ final class DNARest {
     HttpTransport transport = new JdkHttpTransport();
     final Telemetry telemetry = new Telemetry();
 
+    /** The last request failed in transport (no HTTP response), not with an HTTP status. */
+    private boolean transportFailed = false;
+    /** The gateway's own error code from the last failed request. */
+    String lastGatewayCode = "";
+
     private double zoneMinInterval = 1.0;
     private long lastZoneRequestAtNanos = 0L;
 
@@ -141,18 +146,31 @@ final class DNARest {
 
     // ---------------------------------------------------------------- errors
 
-    static String formatErrorCode(Object code) {
+    String formatErrorCode(Object code) {
         if (Php.isNumeric(code)) {
-            return "API_" + str(code);
+            // A transport failure carries the curl errno, not an HTTP status.
+            return (transportFailed ? "CURL_" : "API_") + str(code);
         }
         return str(code);
     }
 
-    static Map<String, Object> setError(Object code) {
+    Map<String, Object> setError(Object code) {
         return setError(code, "", "");
     }
 
-    static Map<String, Object> setError(Object code, Object message, Object details) {
+    private static final Pattern API_STATUS_CODE = Pattern.compile("^API_\\d+$");
+
+    /** php-dna setError(): adds GatewayCode next to an API_<status> code when the gateway sent its own. */
+    Map<String, Object> setError(Object code, Object message, Object details) {
+        Map<String, Object> result = baseError(code, message, details);
+        Object c = result.get("Code");
+        if (c instanceof String && API_STATUS_CODE.matcher((String) c).matches() && !lastGatewayCode.isEmpty()) {
+            result.put("GatewayCode", lastGatewayCode);
+        }
+        return result;
+    }
+
+    static Map<String, Object> baseError(Object code, Object message, Object details) {
         Map<String, Object> result = new LinkedHashMap<>();
         String[] def = DEFAULT_ERRORS.get(str(code));
         if (def != null) {
@@ -236,6 +254,9 @@ final class DNARest {
     Object request(String method, String endpoint, Object data) throws ApiException {
         paceZoneRequest(endpoint);
 
+        transportFailed = false;
+        lastGatewayCode = "";
+
         startAtNanos = System.nanoTime();
         long startWallMs = System.currentTimeMillis();
 
@@ -270,6 +291,7 @@ final class DNARest {
         } catch (HttpTransport.TransportException te) {
             // Transport failure (timeout, DNS, TLS, reset): an error, never an empty success.
             int errno = te.getCode();
+            transportFailed = true;
             String detail = te.getMessage() == null ? "" : te.getMessage();
             String errorMessage = errno == HttpTransport.TransportException.TIMEOUT
                 ? "Could not reach the DomainNameAPI service: the connection timed out. (" + detail + ")"
@@ -307,7 +329,13 @@ final class DNARest {
 
         Object errorMessage = coalesce(get(parsed, "message"), get(parsed, "error", "message"), responseBody);
         Object errorCode = coalesce(get(parsed, "code"), get(parsed, "error", "code"), "HTTP_" + status);
-        Object errorDetails = coalesce(get(parsed, "details"), get(parsed, "error", "details"), responseBody);
+        Object apiDetails = coalesce(get(parsed, "details"), get(parsed, "error", "details"));
+        Object errorDetails = coalesce(apiDetails, responseBody);
+        // The gateway's own code (e.g. Dna.DomainService:Domain:10007) is kept as GatewayCode.
+        if (errorCode instanceof String && !((String) errorCode).isEmpty() && !((String) errorCode).startsWith("HTTP_")
+            && !"CREDENTIALS".equals(errorCode)) {
+            lastGatewayCode = (String) errorCode;
+        }
 
         if (Php.trim(errorMessage).isEmpty()) {
             errorMessage = "HTTP " + status + " - " + httpStatusReason(status);
@@ -318,7 +346,8 @@ final class DNARest {
 
         boolean isBoilerplate = BOILERPLATE.matcher(str(errorMessage)).find();
         if (isBoilerplate || str(errorMessage).equals(str(errorCode))) {
-            String detailsClean = Php.trim(str(errorDetails).replaceFirst("^Dna\\s+", ""));
+            // Only the gateway's details field may replace the message, never the raw body.
+            String detailsClean = Php.trim(str(apiDetails).replaceFirst("^Dna\\s+", ""));
             if (!detailsClean.isEmpty()
                 && !detailsClean.equals(str(errorMessage))
                 && !detailsClean.equals(str(errorCode))
@@ -372,12 +401,12 @@ final class DNARest {
                 resp.put("id", get(response, "resellerId"));
                 resp.put("active", true);
                 resp.put("name", coalesce(get(response, "resellerName"), ""));
-                resp.put("balance", str(coalesce(get(response, "usdBalance"), 0)));
+                resp.put("balance", Php.numberFormat(Php.toFloat(coalesce(get(response, "usdBalance"), 0)), 2));
                 resp.put("currency", "USD");
                 resp.put("symbol", "$");
                 resp.put("balances", list(
-                    map("balance", str(coalesce(get(response, "usdBalance"), 0)), "currency", "USD", "symbol", "$"),
-                    map("balance", str(coalesce(get(response, "tryBalance"), 0)), "currency", "TL", "symbol", "TL")));
+                    map("balance", Php.numberFormat(Php.toFloat(coalesce(get(response, "usdBalance"), 0)), 2), "currency", "USD", "symbol", "$"),
+                    map("balance", Php.numberFormat(Php.toFloat(coalesce(get(response, "tryBalance"), 0)), 2), "currency", "TL", "symbol", "TL")));
             } else {
                 resp.put("result", RESULT_ERROR);
                 resp.put("error", setError("CREDENTIALS", "Invalid response format",
@@ -402,6 +431,18 @@ final class DNARest {
         try {
             Object response = request("GET", "deposit/accounts/me", map("currency", currencyName));
             String balanceKey = Php.strtolower(currencyId) + "Balance";
+            if (!(response instanceof Map) || !((Map<?, ?>) response).containsKey(balanceKey)) {
+                // The account only reports USD and TRY balances.
+                return map(
+                    "ErrorCode", "BALANCE",
+                    "OperationMessage", "No " + currencyName + " balance is reported for this account. Available: USD, TRY.",
+                    "OperationResult", "FAILED",
+                    "Balance", "0.00",
+                    "CurrencyId", mapped[0],
+                    "CurrencyInfo", null,
+                    "CurrencyName", mapped[1],
+                    "CurrencySymbol", mapped[2]);
+            }
             return map(
                 "ErrorCode", 0,
                 "OperationMessage", "Command completed succesfully.",
@@ -459,7 +500,11 @@ final class DNARest {
                         tld = Php.strtolower(dot >= 0 ? dn.substring(dot + 1) : "");
                     }
                     Object domainRaw = coalesce(get(item, "domainName"), "");
-                    String domainName = Php.strtolower(domainRaw).replace("." + tld, "");
+                    // Strip only the trailing ".tld" ("my.company.com" stays "my.company").
+                    String lower = Php.strtolower(domainRaw);
+                    String suffix = "." + tld;
+                    String domainName = !tld.isEmpty() && lower.endsWith(suffix)
+                        ? lower.substring(0, lower.length() - suffix.length()) : lower;
                     String status = Php.strtolower(coalesce(get(item, "status"), ""));
                     boolean available = status.equals("available") || status.equals("1") || status.equals("true");
 
@@ -638,7 +683,7 @@ final class DNARest {
         try {
             Map<String, Object> payload = map("domainName", domainName, "nameServers", normalizeHostNameList(nameServers));
             Object response = request("PUT", "domains/dns/name-server", payload);
-            return map("result", RESULT_OK, "data", map("NameServers", coalesce(get(response, "nameServers"), nameServers)));
+            return map("result", RESULT_OK, "data", map("NameServers", coalesce(get(response, "nameServers"), payload.get("nameServers"))));
         } catch (ApiException e) {
             return fail(e, "MODIFY_NS");
         }
@@ -735,7 +780,7 @@ final class DNARest {
         return null;
     }
 
-    private static Map<String, Object> plainError(String code, String why) {
+    private Map<String, Object> plainError(String code, String why) {
         return map("result", RESULT_ERROR, "error", setError(code, why, why));
     }
 
@@ -781,10 +826,15 @@ final class DNARest {
             String endpoint = "domains/zones?" + Php.httpBuildQuery(map("domainName", domainName));
             request("POST", endpoint, body);
             if (truthy(apply)) {
-                applyResourceRecords(domainName);
+                // A failed apply leaves the change staged but not live: report it.
+                Map<String, Object> applied = applyResourceRecords(domainName);
+                if (!RESULT_OK.equals(applied.get("result"))) {
+                    return applied;
+                }
             }
-            return map("result", RESULT_OK, "data", map("Name", n, "Type", type,
-                "TTL", Php.intValue(Php.toInt(ttl)), "Content", content));
+            Map<?, ?> zs = (Map<?, ?>) body.get("zoneStruct");
+            return map("result", RESULT_OK, "data", map("Name", n, "Type", zs.get("type"),
+                "TTL", zs.get("ttl"), "Content", content));
         } catch (ApiException e) {
             return fail(e, "ADD_ZONE");
         }
@@ -802,10 +852,15 @@ final class DNARest {
             String endpoint = "domains/zones?" + Php.httpBuildQuery(map("domainName", domainName, "recordName", recordName));
             request("PUT", endpoint, body);
             if (truthy(apply)) {
-                applyResourceRecords(domainName);
+                // A failed apply leaves the change staged but not live: report it.
+                Map<String, Object> applied = applyResourceRecords(domainName);
+                if (!RESULT_OK.equals(applied.get("result"))) {
+                    return applied;
+                }
             }
-            return map("result", RESULT_OK, "data", map("Name", n, "Type", type,
-                "TTL", Php.intValue(Php.toInt(ttl)), "Content", content));
+            Map<?, ?> zs = (Map<?, ?>) body.get("zoneStruct");
+            return map("result", RESULT_OK, "data", map("Name", n, "Type", zs.get("type"),
+                "TTL", zs.get("ttl"), "Content", content));
         } catch (ApiException e) {
             return fail(e, "EDIT_ZONE");
         }
@@ -819,7 +874,11 @@ final class DNARest {
                 "Record", record,
                 "RecordType", recordType));
             if (truthy(apply)) {
-                applyResourceRecords(domainName);
+                // A failed apply leaves the change staged but not live: report it.
+                Map<String, Object> applied = applyResourceRecords(domainName);
+                if (!RESULT_OK.equals(applied.get("result"))) {
+                    return applied;
+                }
             }
             return map("result", RESULT_OK, "data", map("Name", name, "Type", recordType, "Content", record));
         } catch (ApiException e) {
@@ -859,10 +918,15 @@ final class DNARest {
             String endpoint = "domains/zones?" + Php.httpBuildQuery(map("domainName", domainName));
             request("POST", endpoint, body);
             if (truthy(apply)) {
-                applyResourceRecords(domainName);
+                // A failed apply leaves the change staged but not live: report it.
+                Map<String, Object> applied = applyResourceRecords(domainName);
+                if (!RESULT_OK.equals(applied.get("result"))) {
+                    return applied;
+                }
             }
-            return map("result", RESULT_OK, "data", map("Name", n, "Type", Php.strtoupper(type),
-                "TTL", Php.intValue(Php.toInt(ttl)), "Contents", values));
+            Map<?, ?> zs = (Map<?, ?>) body.get("zoneStruct");
+            return map("result", RESULT_OK, "data", map("Name", n, "Type", zs.get("type"),
+                "TTL", zs.get("ttl"), "Contents", values));
         } catch (ApiException e) {
             return fail(e, "SET_ZONE");
         }
@@ -1056,8 +1120,8 @@ final class DNARest {
                 "ForwardType", str(coalesce(get(response, "redirectType"), ""))));
         } catch (ApiException e) {
             Object raw = coalesce(get(lastResponse, "raw_response"), e.getMessage());
-            if (str(raw).toLowerCase(java.util.Locale.ROOT).contains("not found")
-                || str(e.getMessage()).toLowerCase(java.util.Locale.ROOT).contains("not found")) {
+            // Only the gateway's "no forwarding configured" answer means disabled.
+            if (isForwardNotSet(e)) {
                 return map("result", RESULT_OK, "data", map("Enabled", false, "RedirectAddress", "", "ForwardType", ""));
             }
             String code = formatErrorCode(e.code);
@@ -1089,10 +1153,22 @@ final class DNARest {
     Map<String, Object> deleteForwarding(Object domainName) {
         try {
             request("DELETE", "domains/forwards", map("DomainName", domainName));
-            return map("result", RESULT_OK, "data", map("DomainName", domainName));
+            return map("result", RESULT_OK, "data", map("DomainName", domainName, "Removed", true));
         } catch (ApiException e) {
+            // Nothing configured: deleting is a no-op.
+            if (isForwardNotSet(e)) {
+                return map("result", RESULT_OK, "data", map("DomainName", domainName, "Removed", false));
+            }
             return fail(e, "DELETE_FORWARD");
         }
+    }
+
+    /** The gateway answers "Redirect information not found" when no forwarding is configured. */
+    private boolean isForwardNotSet(ApiException e) {
+        String needle = "redirect information not found";
+        return str(e.getMessage()).toLowerCase(java.util.Locale.ROOT).contains(needle)
+            || str(get(lastResponse, "raw_response")).toLowerCase(java.util.Locale.ROOT).contains(needle)
+            || Json.encode(lastResponse).toLowerCase(java.util.Locale.ROOT).contains(needle);
     }
 
     // ---------------------------------------------------------------- contacts
@@ -1101,10 +1177,13 @@ final class DNARest {
         try {
             Object domainInfo = request("GET", "domains/info", map("DomainName", domainName));
             Map<String, String> typeMap = new LinkedHashMap<>();
-            typeMap.put("Admin", "Administrative");
-            typeMap.put("Billing", "Billing");
-            typeMap.put("Tech", "Technical");
-            typeMap.put("Registrant", "Registrant");
+            typeMap.put("admin", "Administrative");
+            typeMap.put("administrative", "Administrative");
+            typeMap.put("billing", "Billing");
+            typeMap.put("tech", "Technical");
+            typeMap.put("technical", "Technical");
+            typeMap.put("registrant", "Registrant");
+            typeMap.put("owner", "Registrant");
 
             Map<String, Object> contacts = new LinkedHashMap<>();
             Object items = get(domainInfo, "contacts");
@@ -1113,8 +1192,12 @@ final class DNARest {
                     if (!(item instanceof Map)) {
                         continue;
                     }
-                    String apiType = str(coalesce(get(item, "contactType"), ""));
-                    String key = typeMap.containsKey(apiType) ? typeMap.get(apiType) : Php.ucfirst(Php.strtolower(apiType));
+                    String apiType = Php.trim(coalesce(get(item, "contactType"), ""));
+                    String lowerType = Php.strtolower(apiType);
+                    String key = typeMap.containsKey(lowerType) ? typeMap.get(lowerType) : Php.ucfirst(lowerType);
+                    if (key.isEmpty()) {
+                        continue;
+                    }
                     Map<String, Object> merged = assoc(item);
                     merged.put("type", key);
                     contacts.put(key, parseContactInfo(merged));
@@ -1123,9 +1206,11 @@ final class DNARest {
             Map<String, Object> ordered = new LinkedHashMap<>();
             for (String k : new String[]{"Administrative", "Billing", "Registrant", "Technical"}) {
                 if (contacts.get(k) != null) {
-                    ordered.put(k, contacts.get(k));
+                    ordered.put(k, contacts.remove(k));
                 }
             }
+            // Any other type the registry returned is kept, after the known four.
+            ordered.putAll(contacts);
             return map("data", map("contacts", ordered), "result", RESULT_OK);
         } catch (ApiException e) {
             return fail(e, "GET_CONTACTS");
@@ -1156,20 +1241,19 @@ final class DNARest {
 
     // ---------------------------------------------------------------- transfers
 
-    Map<String, Object> transfer(Object domainName, Object eppCode, Object period, Object contacts) {
+    /** Transfers never carry contacts: the registrar handles them (owner decision). */
+    Map<String, Object> transfer(Object domainName, Object eppCode, Object period) {
         try {
-            List<Object> payloadContacts = new ArrayList<>();
-            if (!empty(contacts)) {
-                for (Map.Entry<String, Object> e : assoc(contacts).entrySet()) {
-                    payloadContacts.add(parseContact(e.getValue(), Php.ucfirst(Php.strtolower(e.getKey()))));
-                }
-            }
             Map<String, Object> payload = map(
                 "domainName", domainName,
                 "authCode", eppCode,
                 "period", period,
-                "contacts", payloadContacts);
+                "contacts", new ArrayList<>());
             Object response = request("POST", "domains/transfer", payload);
+            Map<String, Object> failed = operationFailure(response, "TRANSFER_DOMAIN");
+            if (failed != null) {
+                return failed;
+            }
             return parseDomainInfo(response);
         } catch (ApiException e) {
             return fail(e, "TRANSFER_DOMAIN");
@@ -1231,6 +1315,10 @@ final class DNARest {
     Map<String, Object> renew(Object domainName, Object period) {
         try {
             Object response = request("POST", "domains/renew", map("domainName", domainName, "period", period));
+            Map<String, Object> failed = operationFailure(response, "RENEW_DOMAIN");
+            if (failed != null) {
+                return failed;
+            }
             if (truthy(get(response, "expirationDate"))) {
                 return map("result", RESULT_OK, "data", map("ExpirationDate", formatApiDate(get(response, "expirationDate"))));
             }
@@ -1269,6 +1357,10 @@ final class DNARest {
                 "contacts", payloadContacts,
                 "tldAttributes", attrs);
             Object response = request("POST", "domains/register-with-contacts", payload);
+            Map<String, Object> failed = operationFailure(response, "REGISTER_DOMAIN");
+            if (failed != null) {
+                return failed;
+            }
             return parseDomainInfo(response);
         } catch (ApiException e) {
             return fail(e, "REGISTER_DOMAIN");
@@ -1433,12 +1525,11 @@ final class DNARest {
 
     Map<String, Object> modifyPrivacyProtectionStatus(Object domainName, Object status, Object reason) {
         try {
-            // php-dna fills an empty reason with the default; the gateway call does not carry it.
-            if (empty(reason)) {
-                reason = DEFAULT_REASON;
-            }
-            request("POST", "domains/privacy", map("domainName", domainName, "privacyStatus", Boolean.TRUE.equals(status)));
-            return map("data", map("PrivacyProtectionStatus", status), "result", RESULT_OK);
+            // reason is kept for signature compatibility only: the gateway's
+            // DomainPrivacyInput has no reason field.
+            boolean enabled = status instanceof Boolean ? (Boolean) status : Php.filterBool(str(status));
+            request("POST", "domains/privacy", map("domainName", domainName, "privacyStatus", enabled));
+            return map("data", map("PrivacyProtectionStatus", enabled), "result", RESULT_OK);
         } catch (ApiException e) {
             return fail(e, "MODIFY_PRIVACY");
         }
@@ -1484,7 +1575,23 @@ final class DNARest {
         return str(value);
     }
 
-    private static Map<String, Object> parseDomainInfo(Object data) {
+    /**
+     * Register, transfer and renew can answer HTTP 200 with {"success": false}:
+     * a refusal, returned as an error envelope. Null when the call succeeded.
+     */
+    private Map<String, Object> operationFailure(Object response, String code) {
+        if (!(response instanceof Map) || !((Map<?, ?>) response).containsKey("success")
+            || !Boolean.FALSE.equals(((Map<?, ?>) response).get("success"))) {
+            return null;
+        }
+        String message = Php.trim(coalesce(get(response, "message"), ""));
+        if (message.isEmpty()) {
+            message = "The registry did not accept the request.";
+        }
+        return map("result", RESULT_ERROR, "error", setError(code, message, message));
+    }
+
+    private Map<String, Object> parseDomainInfo(Object data) {
         if (empty(data)) {
             return map("result", RESULT_ERROR, "error", setError("RESPONSE"));
         }
@@ -1626,6 +1733,13 @@ final class DNARest {
             }
             if (!cc.isEmpty() && digits.startsWith(cc) && digits.length() > cc.length()) {
                 digits = digits.substring(cc.length());
+            } else {
+                // The number carries its own country code that differs from the given one: the number wins.
+                String own = callingCodePrefix(digits);
+                if (!own.isEmpty() && digits.length() > own.length()) {
+                    cc = own;
+                    digits = digits.substring(own.length());
+                }
             }
         } else if (!cc.isEmpty() && digits.startsWith(cc) && digits.length() > 10) {
             digits = digits.substring(cc.length());
@@ -1644,6 +1758,25 @@ final class DNARest {
         return new String[]{digits, cc};
     }
 
+    private static final List<String> TWO_DIGIT_CALLING_CODES = Arrays.asList(
+        "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45", "46", "47",
+        "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63", "64", "65",
+        "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98");
+
+    /** E.164 country calling code at the start of an international number (digits only). */
+    static String callingCodePrefix(String digits) {
+        if (digits.isEmpty() || digits.charAt(0) == '0') {
+            return "";
+        }
+        if (digits.charAt(0) == '1' || digits.charAt(0) == '7') {
+            return digits.substring(0, 1);
+        }
+        if (digits.length() >= 2 && TWO_DIGIT_CALLING_CODES.contains(digits.substring(0, 2))) {
+            return digits.substring(0, 2);
+        }
+        return digits.length() >= 3 ? digits.substring(0, 3) : "";
+    }
+
     boolean isTrTLD(Object domain) {
         String d = str(domain);
         String tail = d.length() >= 3 ? d.substring(d.length() - 3) : d;
@@ -1657,7 +1790,6 @@ final class DNARest {
             "LastName", "Isimyok",
             "AddressLine1", "Addres yok",
             "City", "ISTANBUL",
-            "State", "ISTANBUL",
             "Country", "TR",
             "ZipCode", "34000",
             "Phone", "5555555555",
@@ -1667,6 +1799,8 @@ final class DNARest {
                 contact.put(e.getKey(), e.getValue());
             }
         }
+        // No State default: a missing state falls back to the city below.
+        contact.put("State", coalesce(contact.get("State"), ""));
 
         contact.put("FirstName", sanitizePersonName(contact.get("FirstName")));
         contact.put("LastName", sanitizePersonName(contact.get("LastName")));

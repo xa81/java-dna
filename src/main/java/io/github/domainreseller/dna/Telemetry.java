@@ -49,7 +49,8 @@ final class Telemetry {
         "TLD is not supported",
         "Invalid API credentials",
         "could not be found",
-        "Insufficent reseller balance"
+        "Insufficent reseller balance",
+        "Redirect information not found"
     ));
 
     /** Where events go. Replaceable in tests. */

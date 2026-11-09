@@ -78,6 +78,49 @@ class HttpLayerTest {
     }
 
     @Test
+    void transferNeverSendsContacts() {
+        FakeTransport t = new FakeTransport().respond(200, "{\"status\":\"Active\"}");
+        api(t).transfer("example.com", "Ab1!", 1);
+        assertEquals("{\"domainName\":\"example.com\",\"authCode\":\"Ab1!\",\"period\":1,\"contacts\":[]}",
+            t.requests.get(0).getBody());
+    }
+
+    @Test
+    void privacyStatusAsTextAndNoReasonOnTheWire() {
+        FakeTransport t = new FakeTransport().respond(200, "").respond(200, "");
+        DomainNameApi api = api(t);
+        assertEquals(true, ((Map<?, ?>) api.modifyPrivacyProtectionStatus("example.com", "on").get("data")).get("PrivacyProtectionStatus"));
+        assertEquals(false, ((Map<?, ?>) api.modifyPrivacyProtectionStatus("example.com", "no", "Customer asked").get("data")).get("PrivacyProtectionStatus"));
+        assertEquals("{\"domainName\":\"example.com\",\"privacyStatus\":true}", t.requests.get(0).getBody());
+        assertEquals("{\"domainName\":\"example.com\",\"privacyStatus\":false}", t.requests.get(1).getBody());
+    }
+
+    @Test
+    void zoneWriteReportsFailedApply() {
+        FakeTransport t = new FakeTransport().respond(200, "").respond(429, "");
+        Map<String, Object> r = api(t).addResourceRecord("example.com", "www", "a", "192.0.2.5", 999999);
+        assertEquals("ERROR", r.get("result"));
+        assertEquals("API_429", ((Map<?, ?>) r.get("error")).get("Code"));
+
+        FakeTransport ok = new FakeTransport().respond(200, "");
+        Map<?, ?> data = (Map<?, ?>) api(ok).addResourceRecord("example.com", "www", "a", "192.0.2.5", 999999, false).get("data");
+        assertEquals("A", data.get("Type"), "upper-cased type that was sent");
+        assertEquals(86400, data.get("TTL"), "clamped TTL that was sent");
+    }
+
+    @Test
+    void forwardingNotSetVersusMissingDomain() {
+        String notSet = "{\"error\":{\"code\":\"Dna.DomainService:Domain:10061\",\"message\":\"Redirect information not found\"}}";
+        String missing = "{\"error\":{\"code\":\"Dna.DomainService:Domain:10007\",\"message\":\"The domain name you requested could not be found.\"}}";
+        FakeTransport t = new FakeTransport().respond(404, notSet).respond(404, missing).respond(404, notSet).respond(200, "");
+        DomainNameApi api = api(t);
+        assertEquals("OK", api.getForwarding("example.com").get("result"));
+        assertEquals("ERROR", api.getForwarding("missing.com").get("result"));
+        assertEquals(false, ((Map<?, ?>) api.deleteForwarding("example.com").get("data")).get("Removed"));
+        assertEquals(true, ((Map<?, ?>) api.deleteForwarding("example.com").get("data")).get("Removed"));
+    }
+
+    @Test
     void testModeAndServiceUrl() {
         assertEquals(DomainNameApi.URL_PROD, new DomainNameApi("r", "k").getServiceUrl());
         assertEquals(DomainNameApi.URL_OTE, new DomainNameApi("r", "k", true).getServiceUrl());
@@ -179,7 +222,7 @@ class HttpLayerTest {
             api.setServiceUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/api/v1");
             Map<String, Object> details = api.getResellerDetails();
             assertEquals("OK", details.get("result"));
-            assertEquals("1.5", details.get("balance"));
+            assertEquals("1.50", details.get("balance"));
             assertEquals("GET /api/v1/deposit/accounts/me ua=DomainNameAPI-Java/1.0.0 key=k-1 reseller=r-1 body=", seen.get(0));
 
             api.deleteForwarding("example.com");
@@ -207,7 +250,7 @@ class HttpLayerTest {
         Map<String, Object> r = api.enableTheftProtectionLock("example.com");
         assertEquals("ERROR", r.get("result"));
         Map<?, ?> err = (Map<?, ?>) r.get("error");
-        assertEquals("API_7", err.get("Code"));
+        assertEquals("CURL_7", err.get("Code"));
         assertTrue(((String) err.get("Message")).startsWith("Curl error during request: "), (String) err.get("Message"));
     }
 }

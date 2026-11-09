@@ -49,7 +49,7 @@ class ConformanceTest {
 
     @Test
     void allFixturesArePresent() throws Exception {
-        assertEquals(126, fixtureFiles().size(), "php-dna ships 126 conformance fixtures");
+        assertEquals(134, fixtureFiles().size(), "php-dna ships 134 conformance fixtures");
     }
 
     @TestFactory
@@ -171,6 +171,10 @@ class ConformanceTest {
             case "disableTheftProtectionLock":
                 return api.disableTheftProtectionLock(s(a, 0));
             case "modifyPrivacyProtectionStatus":
+                if (a.get(1) instanceof String) {
+                    return n == 2 ? api.modifyPrivacyProtectionStatus(s(a, 0), s(a, 1))
+                        : api.modifyPrivacyProtectionStatus(s(a, 0), s(a, 1), s(a, 2));
+                }
                 return n == 2 ? api.modifyPrivacyProtectionStatus(s(a, 0), b(a, 1))
                     : api.modifyPrivacyProtectionStatus(s(a, 0), b(a, 1), s(a, 2));
             case "renew":
@@ -190,8 +194,9 @@ class ConformanceTest {
             case "modifyChildNameServer":
                 return api.modifyChildNameServer(s(a, 0), s(a, 1), s(a, 2));
             case "transfer":
-                return n == 3 ? api.transfer(s(a, 0), s(a, 1), i(a, 2))
-                    : api.transfer(s(a, 0), s(a, 1), i(a, 2), m(a, 3));
+                // The Java API has no contacts parameter (transfers never send contacts);
+                // a 4th fixture argument is dropped, as php-dna's 3-parameter facade drops it.
+                return api.transfer(s(a, 0), s(a, 1), i(a, 2));
             case "cancelTransfer":
                 return api.cancelTransfer(s(a, 0));
             case "approveTransfer":

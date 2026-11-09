@@ -74,6 +74,7 @@ class TelemetryTest {
     void ignoredErrors() {
         assertTrue(Telemetry.isIgnored("The domain name you requested could not be found. Please check"));
         assertTrue(Telemetry.isIgnored("Invalid API credentials"));
+        assertTrue(Telemetry.isIgnored("Redirect information not found"));
         assertFalse(Telemetry.isIgnored("An internal error has occurred."));
     }
 

@@ -27,7 +27,7 @@ class ErrorMappingTest {
         FakeTransport t = new FakeTransport().fail(28, "Operation timed out after 30000 milliseconds");
         DomainNameApi api = api(t);
         Map<?, ?> err = error(api.modifyNameServer("example.com", java.util.Arrays.asList("ns1.example.net")));
-        assertEquals("API_28", err.get("Code"));
+        assertEquals("CURL_28", err.get("Code"));
         assertEquals("Could not reach the DomainNameAPI service: the connection timed out. "
             + "(Operation timed out after 30000 milliseconds)", err.get("Message"));
         assertEquals(err.get("Message"), err.get("Details"));
@@ -40,7 +40,7 @@ class ErrorMappingTest {
         FakeTransport t = new FakeTransport().fail(6, "Could not resolve host: api.domainresellerapi.com");
         DomainNameApi api = api(t);
         Map<?, ?> err = error(api.getDetails("example.com"));
-        assertEquals("API_6", err.get("Code"));
+        assertEquals("CURL_6", err.get("Code"));
         assertEquals("Curl error during request: Could not resolve host: api.domainresellerapi.com", err.get("Message"));
         assertEquals("CURL_6", ((Map<?, ?>) api.getParsedResponseData()).get("Code"));
     }
@@ -50,7 +50,7 @@ class ErrorMappingTest {
         FakeTransport t = new FakeTransport().fail(28, "timeout");
         Map<String, Object> r = api(t).getCurrentBalance("EUR");
         assertEquals("FAILED", r.get("OperationResult"));
-        assertEquals("API_28", r.get("ErrorCode"));
+        assertEquals("CURL_28", r.get("ErrorCode"));
         assertEquals("0.00", r.get("Balance"));
         assertEquals(3, r.get("CurrencyId"));
     }
@@ -125,6 +125,38 @@ class ErrorMappingTest {
         Map<?, ?> err = error(api(new FakeTransport().respond(200, "")).transfer("x.com", "epp", 1));
         assertEquals("RESPONSE", err.get("Code"));
         assertTrue(((String) err.get("Message")).contains("Response is empty"));
+    }
+
+    @Test
+    void gatewayCodeIsKeptNextToApiStatus() {
+        Map<?, ?> err = error(api(new FakeTransport().respond(404,
+            "{\"error\":{\"code\":\"Dna.DomainService:Domain:10007\",\"message\":\"Not here\",\"details\":null}}")).getDetails("x.com"));
+        assertEquals("API_404", err.get("Code"));
+        assertEquals("Dna.DomainService:Domain:10007", err.get("GatewayCode"));
+
+        Map<?, ?> plain = error(api(new FakeTransport().respond(500, "")).getDetails("x.com"));
+        assertTrue(!plain.containsKey("GatewayCode"), "no gateway code, no key");
+        Map<?, ?> redirect = error(api(new FakeTransport().respond(302, "")).getDetails("x.com"));
+        assertTrue(!redirect.containsKey("GatewayCode"), "CREDENTIALS is not a gateway code");
+    }
+
+    @Test
+    void rawBodyNeverReplacesTheMessage() {
+        Map<?, ?> err = error(api(new FakeTransport().respond(400,
+            "{\"error\":{\"code\":\"E9\",\"message\":\"E9\",\"details\":null}}")).getDetails("x.com"));
+        assertEquals("The operation could not be completed by the registry (error: E9). Please try again or contact support.",
+            err.get("Message"));
+    }
+
+    @Test
+    void successFalseIsARefusal() {
+        String refused = "{\"success\":false,\"message\":\"Domain is not available for registration\"}";
+        Map<?, ?> t = error(api(new FakeTransport().respond(200, refused)).transfer("x.com", "epp", 1));
+        assertEquals("TRANSFER_DOMAIN", t.get("Code"));
+        assertEquals("Domain is not available for registration", t.get("Message"));
+        Map<?, ?> r = error(api(new FakeTransport().respond(200, "{\"success\":false}")).renew("x.com", 1));
+        assertEquals("RENEW_DOMAIN", r.get("Code"));
+        assertEquals("The registry did not accept the request.", r.get("Message"));
     }
 
     @Test

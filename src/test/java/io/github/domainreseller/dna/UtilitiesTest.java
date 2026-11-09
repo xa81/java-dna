@@ -54,6 +54,9 @@ class UtilitiesTest {
         assertEquals("Addres yok", v.get("AddressLine1"));
         assertEquals("34000", v.get("ZipCode"));
         assertEquals("Ada 2nd!", c.get("FirstName"), "input is not mutated");
+
+        Map<String, Object> noState = api.validateContact(Collections.singletonMap("City", "Ankara"));
+        assertEquals("Ankara", noState.get("State"), "missing state falls back to the city, not ISTANBUL");
     }
 
     @Test
@@ -70,6 +73,12 @@ class UtilitiesTest {
         assertArrayEquals(new String[]{"2025550100", "1"}, DNARest.normalizePhone("001 202 555 0100", "1"));
         assertArrayEquals(new String[]{"", "44"}, DNARest.normalizePhone("", "+44"));
         assertArrayEquals(new String[]{"5323743388", "90"}, DNARest.normalizePhone("0532 374 33 88", ""));
+        // a "+" number with its own, different calling code keeps it
+        assertArrayEquals(new String[]{"2025550100", "1"}, DNARest.normalizePhone("+1 (202) 555-0100", "90"));
+        assertArrayEquals(new String[]{"2071234567", "44"}, DNARest.normalizePhone("+44 20 7123 4567", "90"));
+        assertArrayEquals(new String[]{"501234567", "994"}, DNARest.normalizePhone("+994 50 123 45 67", ""));
+        assertEquals("", DNARest.callingCodePrefix("0123"));
+        assertEquals("7", DNARest.callingCodePrefix("79161234567"));
     }
 
     @Test

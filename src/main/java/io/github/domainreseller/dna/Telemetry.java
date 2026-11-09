@@ -66,6 +66,7 @@ final class Telemetry {
     private volatile boolean minimal = false;
     private volatile String dsn = DEFAULT_SENTRY_DSN;
     private volatile Sender sender = new HttpSender();
+    private volatile java.util.function.Supplier<String> ipResolver = Telemetry::serverIp;
     private String sessionTraceId;
 
     void setEnabled(boolean enabled) {
@@ -94,6 +95,10 @@ final class Telemetry {
 
     void setSender(Sender sender) {
         this.sender = sender;
+    }
+
+    void setIpResolver(java.util.function.Supplier<String> ipResolver) {
+        this.ipResolver = ipResolver;
     }
 
     // ------------------------------------------------------------------ DSN
@@ -533,6 +538,7 @@ final class Telemetry {
         String authHeader = auth.toString();
         String url = d.storeUrl();
         Sender s = sender;
+        java.util.function.Supplier<String> ip = ipResolver;
         Thread t = new Thread(() -> {
             try {
                 Object tags = event.get("tags");
@@ -540,7 +546,7 @@ final class Telemetry {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> tm = (Map<String, Object>) tags;
                     if ("{ip}".equals(tm.get("ip_address"))) {
-                        tm.put("ip_address", serverIp());
+                        tm.put("ip_address", ip.get());
                     }
                 }
                 s.post(url, Json.encode(event), authHeader);

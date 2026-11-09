@@ -222,6 +222,8 @@ dna.registerWithContactInfo("example.com.tr", 1, contacts,
 }
 ```
 注册接口只返回一份简短的回执；如需完整记录，请随后调用 `getDetails`。
+当网关拒绝该订单时（`"success": false`），返回错误码为 `REGISTER_DOMAIN` 的错误，
+并附带网关返回的消息。
 </details>
 
 ### 域名续费
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+续费被拒绝时，返回错误码为 `RENEW_DOMAIN` 的错误。
 </details>
 
 ### 域名转移
 
 ```java
+// 转移时绝不发送联系人信息：注册商会随域名一并接管联系人
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // 先检查该域名能否使用此授权码转移
@@ -255,7 +259,7 @@ dna.rejectTransfer("example.com");   // 转出
 <details>
 <summary>示例输出</summary>
 
-`transfer` 返回与注册相同的结构。`checkTransfer`：
+`transfer` 返回与注册相同的结构（网关拒绝转移时，返回错误码为 `TRANSFER_DOMAIN` 的错误）。`checkTransfer`：
 
 ```json
 {
@@ -499,8 +503,13 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### 修改域名隐私保护
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// 状态也可以是面板中存储的文本形式："1", "true", "on", "yes" 表示启用
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+可选的第三个参数（`reason`）仅为兼容 php-dna 而接受，但不会被发送：网关没有该字段。
 
 <details>
 <summary>示例输出</summary>
@@ -562,6 +571,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+联系人类型的匹配不区分大小写（`Admin`/`Administrative`、`Tech`/`Technical`、
+`Registrant`/`Owner`、`Billing`）；注册局返回的其他任何类型都会保留在这四种类型之后。
 `saveContacts` 返回 `{"result": "OK", "data": {"contacts": {...}}}`。
 </details>
 
@@ -593,7 +604,8 @@ dna.applyResourceRecords("example.com");
 名称可以是 `""` / `"@"`（根域名）、一个标签（`"www"`）或完整名称（`"www.example.com."`）。
 支持的类型：`A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`。TTL 范围为
 1..86400 秒。由于网关会对突发请求返回 HTTP 429，区域相关调用之间至少间隔一秒
-（可通过 `setZoneMinInterval(seconds)` 修改间隔）。
+（可通过 `setZoneMinInterval(seconds)` 修改间隔）。结果中会报告实际发送的
+大写类型和限定到允许范围内的 TTL。自动应用失败时，写入操作会返回该应用错误：更改已暂存，但尚未生效。
 
 <details>
 <summary>示例输出</summary>
@@ -630,7 +642,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-未设置转发时：`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`。
+未设置转发时（网关返回 `Redirect information not found`）：
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`。其他任何
+错误（例如未知域名）都会作为错误返回。
+`deleteForwarding` 返回 `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`，
+若原本未设置任何转发，则返回 `"Removed": false`。
 </details>
 
 ### 获取代理商详情和余额
@@ -655,7 +671,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY、EUR、GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -672,6 +688,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY、EUR、GBP
     "CurrencySymbol": "$"
 }
 ```
+该账户仅报告 USD 和 TRY 余额。对于其他货币（EUR、GBP 等），结果为
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`。
 </details>
 
 ### 实用工具（无需网络）
@@ -726,15 +744,20 @@ Map<String, Object> clean = dna.validateContact(raw);
 ```
 
 - 对于网关错误，`Code` 为 `API_<HTTP status>`（`API_400`、`API_404`、`API_429`、`API_500` 等）。
-  301/302 响应表示凭据错误（`Invalid API credentials`）。
+  若网关返回了自身的错误码，则会保留在 `GatewayCode` 中
+  （例如 `"GatewayCode": "Dna.DomainService:Domain:10007"`），从而可以将“域名不存在”
+  与其他 404 区分开来。301/302 响应表示凭据错误（`Invalid API credentials`）。
 - 当网关列出逐字段的校验错误时，`Details` 会写明相关字段，例如
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - 空的错误响应体会被转换为 `HTTP 429 - Too Many Requests` 之类的信息。
-- 超时、DNS 和 TLS 失败同样属于错误，绝不会被当作空的成功结果。超时信息为
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)`，错误码为 `API_28`；
-  其他传输失败信息为 `Curl error during request: ...`（保留 curl 错误编号，以便
-  错误码与 php-dna 保持一致；`getParsedResponseData()` 将其显示为 `CURL_<n>`）。
-- 库内部的检查使用其自有错误码：`RESPONSE`（空响应）、`DOMAIN_RENEW`、
+- 超时、DNS 和 TLS 失败同样属于错误，绝不会被当作空的成功结果。其错误码为
+  `CURL_<n>`，沿用 curl 的错误编号，与 php-dna 一致：超时为 `CURL_28`，信息为
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`；其他传输失败
+  （`CURL_6` DNS、`CURL_7` 连接被拒绝、`CURL_35`/`CURL_60` TLS、`CURL_56` 连接被重置）
+  的信息为 `Curl error during request: ...`。
+- 网关拒绝时（`"success": false`）返回 `REGISTER_DOMAIN`、`TRANSFER_DOMAIN` 或
+  `RENEW_DOMAIN`，并附带网关返回的消息。
+- 库内部的检查使用其自有错误码：`RESPONSE`（空响应）、`DOMAIN_RENEW`、`BALANCE`、
   `TRANSFER_NOT_AVAILABLE`、`ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`、`SET_FORWARD`、`AVAILABILITY`。
 
 最近一次调用的诊断信息：

@@ -222,6 +222,8 @@ ergänzt und normalisiert (siehe `validateContact`).
 }
 ```
 Der Registrierungs-Endpunkt antwortet mit einer kurzen Bestätigung; rufen Sie anschließend `getDetails` auf, um den vollständigen Datensatz zu erhalten.
+Lehnt das Gateway die Bestellung ab (`"success": false`), ist das Ergebnis ein Fehler mit dem Code
+`REGISTER_DOMAIN` und der Meldung des Gateways.
 </details>
 
 ### Domain-Verlängerung
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+Eine abgelehnte Verlängerung liefert einen Fehler mit dem Code `RENEW_DOMAIN`.
 </details>
 
 ### Domain-Transfer
 
 ```java
+// Bei einem Transfer werden nie Kontakte gesendet: Der Registrar übernimmt sie mit der Domain
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Vorab prüfen, ob die Domain mit diesem Auth-Code transferiert werden kann
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // ausgehend
 <details>
 <summary>Beispielausgabe</summary>
 
-`transfer` liefert dieselbe Struktur wie die Registrierung. `checkTransfer`:
+`transfer` liefert dieselbe Struktur wie die Registrierung (einen Fehler mit dem Code `TRANSFER_DOMAIN`, wenn
+das Gateway den Transfer ablehnt). `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Domain-Datenschutz ändern
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// Der Status kann auch Text sein, wie Panels ihn speichern: "1", "true", "on", "yes" aktivieren den Schutz
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+Das optionale dritte Argument (`reason`) wird aus Kompatibilität mit php-dna akzeptiert, aber nicht gesendet:
+das Gateway kennt kein solches Feld.
 
 <details>
 <summary>Beispielausgabe</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+Kontakttypen werden ohne Beachtung der Groß-/Kleinschreibung zugeordnet (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`); jeder andere Typ, den die Registry liefert, bleibt nach diesen vier erhalten.
 `saveContacts` liefert `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 Namen können `""` / `"@"` (Apex), ein Label (`"www"`) oder ein vollständiger Name (`"www.example.com."`) sein.
 Unterstützte Typen: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. Die TTL beträgt
 1..86400 Sekunden. Zwischen Zonen-Aufrufen liegt mindestens eine Sekunde, da das Gateway auf schnelle Folgen von Anfragen
-mit HTTP 429 antwortet (`setZoneMinInterval(seconds)` ändert den Abstand).
+mit HTTP 429 antwortet (`setZoneMinInterval(seconds)` ändert den Abstand). Die Ergebnisse melden den gesendeten,
+in Großbuchstaben umgewandelten Typ und die begrenzte TTL. Schlägt das automatische Apply fehl, liefert der
+Schreibvorgang den Apply-Fehler: Die Änderung ist vorgemerkt, aber noch nicht live.
 
 <details>
 <summary>Beispielausgabe</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Ohne Weiterleitung: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Ohne Weiterleitung (`Redirect information not found` des Gateways):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Jeder andere
+Fehler, etwa eine unbekannte Domain, wird als Fehler zurückgegeben.
+`deleteForwarding` liefert `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`,
+oder `"Removed": false`, wenn nichts eingerichtet war.
 </details>
 
 ### Reseller-Details und Guthaben abrufen
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+Das Konto meldet nur USD- und TRY-Guthaben. Für andere Währungen (EUR, GBP, ...) lautet das Ergebnis
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Hilfsfunktionen (ohne Netzwerk)
@@ -727,15 +748,20 @@ Netzwerkmethoden werfen bei API- oder Netzwerkproblemen niemals Ausnahmen; sie l
 ```
 
 - `Code` lautet bei Gateway-Fehlern `API_<HTTP-Status>` (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  Eine Antwort mit 301/302 bedeutet falsche Zugangsdaten (`Invalid API credentials`).
+  Hat das Gateway einen eigenen Fehlercode gesendet, bleibt er als `GatewayCode` erhalten
+  (z. B. `"GatewayCode": "Dna.DomainService:Domain:10007"`), sodass sich „Domain nicht gefunden“ von anderen
+  404-Fehlern unterscheiden lässt. Eine Antwort mit 301/302 bedeutet falsche Zugangsdaten (`Invalid API credentials`).
 - Wenn das Gateway Validierungsfehler pro Feld auflistet, nennt `Details` die betroffenen Felder, z. B.
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - Ein leerer Fehler-Body wird zu `HTTP 429 - Too Many Requests` und Ähnlichem.
-- Timeouts sowie DNS- und TLS-Fehler sind ebenfalls Fehler und niemals ein leerer Erfolg. Ein Timeout lautet
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` mit dem Code `API_28`;
-  andere Transportfehler lauten `Curl error during request: ...` (die curl-Fehlernummern werden beibehalten, damit
-  die Codes mit php-dna übereinstimmen; `getParsedResponseData()` zeigt sie als `CURL_<n>` an).
-- Prüfungen auf Bibliotheksseite verwenden eigene Codes: `RESPONSE` (leere Antwort), `DOMAIN_RENEW`,
+- Timeouts sowie DNS- und TLS-Fehler sind ebenfalls Fehler und niemals ein leerer Erfolg. Ihr Code ist
+  `CURL_<n>` mit der curl-Fehlernummer, wie in php-dna: Ein Timeout hat den Code `CURL_28` und lautet
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`; andere Transportfehler
+  (`CURL_6` DNS, `CURL_7` Verbindung abgelehnt, `CURL_35`/`CURL_60` TLS, `CURL_56` Verbindung zurückgesetzt)
+  lauten `Curl error during request: ...`.
+- Eine Ablehnung durch das Gateway (`"success": false`) liefert `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` oder
+  `RENEW_DOMAIN` mit der Meldung des Gateways.
+- Prüfungen auf Bibliotheksseite verwenden eigene Codes: `RESPONSE` (leere Antwort), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Diagnosedaten des letzten Aufrufs:

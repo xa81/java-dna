@@ -222,6 +222,8 @@ tamamlanır ve normalleştirilir (bkz. `validateContact`).
 }
 ```
 Kayıt uç noktası kısa bir makbuzla yanıt verir; kaydın tamamı için ardından `getDetails` çağırın.
+Gateway siparişi reddettiğinde (`"success": false`), sonuç `REGISTER_DOMAIN` kodlu ve gateway'in
+mesajını içeren bir hatadır.
 </details>
 
 ### Domain Yenileme
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+Reddedilen bir yenileme `RENEW_DOMAIN` kodlu bir hata döndürür.
 </details>
 
 ### Domain Transferi
 
 ```java
+// Transferde kişi bilgileri hiçbir zaman gönderilmez: registrar bunları domain ile birlikte devralır
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Önce alan adının bu auth koduyla transfer edilip edilemeyeceğini kontrol edin
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // giden
 <details>
 <summary>Örnek Çıktı</summary>
 
-`transfer`, kayıt işlemiyle aynı yapıyı döndürür. `checkTransfer`:
+`transfer`, kayıt işlemiyle aynı yapıyı döndürür (gateway transferi reddettiğinde `TRANSFER_DOMAIN`
+kodlu bir hata). `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Domain Gizliliğini Değiştirme
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// Durum, panellerin sakladığı gibi metin de olabilir: "1", "true", "on", "yes" korumayı açar
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+İsteğe bağlı üçüncü argüman (`reason`) php-dna uyumluluğu için kabul edilir ancak gönderilmez:
+gateway'de böyle bir alan yoktur.
 
 <details>
 <summary>Örnek Çıktı</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+Kişi türleri büyük/küçük harf duyarsız eşleştirilir (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`); registry'nin döndürdüğü diğer türler bu dördünün ardından korunur.
 `saveContacts` şunu döndürür: `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 Adlar `""` / `"@"` (apex), bir etiket (`"www"`) ya da tam ad (`"www.example.com."`) olabilir.
 Desteklenen türler: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. TTL
 1..86400 saniye aralığındadır. Gateway art arda gelen isteklere HTTP 429 ile yanıt verdiğinden, zone çağrıları arasında
-en az bir saniye bırakılır (`setZoneMinInterval(seconds)` bu aralığı değiştirir).
+en az bir saniye bırakılır (`setZoneMinInterval(seconds)` bu aralığı değiştirir). Sonuçlar, gönderilen büyük harfe
+çevrilmiş türü ve sınırlandırılmış TTL değerini bildirir. Otomatik apply başarısız olursa, yazma işlemi apply
+hatasını döndürür: değişiklik hazırlanmıştır ancak henüz yayında değildir.
 
 <details>
 <summary>Örnek Çıktı</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Yönlendirme yoksa: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Yönlendirme yoksa (gateway'in `Redirect information not found` yanıtı):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Bilinmeyen bir
+domain gibi diğer tüm hatalar hata olarak döner.
+`deleteForwarding` şunu döndürür: `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`;
+ayarlı bir yönlendirme yoksa `"Removed": false`.
 </details>
 
 ### Bayi Bilgileri ve Bakiye Sorgulama
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+Hesap yalnızca USD ve TRY bakiyelerini bildirir. Diğer para birimleri (EUR, GBP, ...) için sonuç şöyledir:
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Yardımcı araçlar (ağ bağlantısı gerektirmez)
@@ -727,15 +748,20 @@ Ağ metotları API veya ağ sorunlarında hiçbir zaman istisna fırlatmaz; bunu
 ```
 
 - Gateway hatalarında `Code` değeri `API_<HTTP status>` (HTTP durum kodu) biçimindedir (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  301/302 yanıtı hatalı kimlik bilgileri anlamına gelir (`Invalid API credentials`).
+  Gateway kendi hata kodunu gönderdiğinde bu kod `GatewayCode` olarak korunur
+  (ör. `"GatewayCode": "Dna.DomainService:Domain:10007"`); böylece "domain bulunamadı" durumu diğer 404'lerden
+  ayırt edilebilir. 301/302 yanıtı hatalı kimlik bilgileri anlamına gelir (`Invalid API credentials`).
 - Gateway alan bazında doğrulama hatalarını listelediğinde, `Details` ilgili alanları belirtir, örneğin
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - Boş bir hata gövdesi `HTTP 429 - Too Many Requests` ve benzeri bir mesaja dönüştürülür.
-- Zaman aşımları, DNS ve TLS hataları da hata olarak döner; hiçbir zaman boş bir başarı yanıtı olarak değil. Zaman aşımı
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` mesajı ve `API_28` koduyla döner;
-  diğer aktarım hataları `Curl error during request: ...` şeklindedir (kodların php-dna ile eşleşmesi için curl hata
-  numaraları korunur; `getParsedResponseData()` bunları `CURL_<n>` olarak gösterir).
-- Kütüphane tarafındaki kontroller kendi kodlarını kullanır: `RESPONSE` (boş yanıt), `DOMAIN_RENEW`,
+- Zaman aşımları, DNS ve TLS hataları da hata olarak döner; hiçbir zaman boş bir başarı yanıtı olarak değil. Kodları,
+  php-dna'daki gibi curl hata numaralarıyla `CURL_<n>` biçimindedir: zaman aşımı `CURL_28` kodunu taşır ve
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)` şeklindedir; diğer aktarım
+  hataları (`CURL_6` DNS, `CURL_7` bağlantı reddedildi, `CURL_35`/`CURL_60` TLS, `CURL_56` bağlantı sıfırlandı)
+  `Curl error during request: ...` şeklindedir.
+- Gateway reddi (`"success": false`), gateway'in mesajıyla birlikte `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` veya
+  `RENEW_DOMAIN` döndürür.
+- Kütüphane tarafındaki kontroller kendi kodlarını kullanır: `RESPONSE` (boş yanıt), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Son çağrıya ait tanılama bilgileri:

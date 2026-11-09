@@ -222,6 +222,8 @@ avant l'envoi (voir `validateContact`).
 }
 ```
 Le point d'accès d'enregistrement répond par un bref accusé de réception ; appelez ensuite `getDetails` pour obtenir l'enregistrement complet.
+Lorsque la passerelle refuse la commande (`"success": false`), le résultat est une erreur avec le code
+`REGISTER_DOMAIN` et le message de la passerelle.
 </details>
 
 ### Renouvellement de Domaine
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+Un renouvellement refusé renvoie une erreur avec le code `RENEW_DOMAIN`.
 </details>
 
 ### Transfert de Domaine
 
 ```java
+// Les contacts ne sont jamais envoyés lors d'un transfert : le registrar les reprend avec le domaine
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Vérifier d'abord si le domaine peut être transféré avec ce code d'autorisation
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // sortant
 <details>
 <summary>Exemple de Sortie</summary>
 
-`transfer` renvoie la même structure que l'enregistrement. `checkTransfer` :
+`transfer` renvoie la même structure que l'enregistrement (une erreur avec le code `TRANSFER_DOMAIN` lorsque la
+passerelle refuse le transfert). `checkTransfer` :
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Modifier la Protection de la Vie Privée du Domaine
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// Le statut peut aussi être du texte, tel que les panneaux le stockent : "1", "true", "on", "yes" l'activent
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+Le troisième argument facultatif (`reason`) est accepté pour la compatibilité avec php-dna, mais n'est pas envoyé : la
+passerelle ne possède pas ce champ.
 
 <details>
 <summary>Exemple de Sortie</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+Les types de contact sont comparés sans tenir compte de la casse (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`) ; tout autre type renvoyé par le registre est conservé après ces quatre.
 `saveContacts` renvoie `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 Les noms peuvent être `""` / `"@"` (apex), un libellé (`"www"`) ou un nom complet (`"www.example.com."`).
 Types pris en charge : `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. Le TTL est compris entre
 1 et 86400 secondes. Les appels de zone sont espacés d'au moins une seconde, car la passerelle répond
-HTTP 429 aux rafales de requêtes (`setZoneMinInterval(seconds)` modifie cet intervalle).
+HTTP 429 aux rafales de requêtes (`setZoneMinInterval(seconds)` modifie cet intervalle). Les résultats indiquent le
+type en majuscules et le TTL ramené dans les limites, tels qu'ils ont été envoyés. Lorsque l'application automatique échoue,
+l'écriture renvoie l'erreur d'application : la modification est préparée mais pas encore active.
 
 <details>
 <summary>Exemple de Sortie</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Sans redirection : `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Sans redirection (le message `Redirect information not found` de la passerelle) :
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Toute autre
+erreur, par exemple un domaine inconnu, est renvoyée en tant qu'erreur.
+`deleteForwarding` renvoie `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`,
+ou `"Removed": false` lorsque rien n'était défini.
 </details>
 
 ### Obtenir les Détails et le Solde du Revendeur
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+Le compte ne déclare que des soldes en USD et en TRY. Pour les autres devises (EUR, GBP, ...), le résultat est
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Utilitaires (sans réseau)
@@ -727,15 +748,20 @@ Les méthodes réseau ne lèvent jamais d'exception en cas de problème d'API ou
 ```
 
 - `Code` vaut `API_<statut HTTP>` pour les erreurs de la passerelle (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  Une réponse 301/302 signifie que les identifiants sont incorrects (`Invalid API credentials`).
+  Lorsque la passerelle a envoyé son propre code d'erreur, il est conservé dans `GatewayCode`
+  (p. ex. `"GatewayCode": "Dna.DomainService:Domain:10007"`), ce qui permet de distinguer « domaine introuvable »
+  des autres 404. Une réponse 301/302 signifie que les identifiants sont incorrects (`Invalid API credentials`).
 - Lorsque la passerelle renvoie des erreurs de validation par champ, `Details` nomme les champs concernés, par exemple
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - Un corps d'erreur vide devient `HTTP 429 - Too Many Requests` ou un message similaire.
-- Les dépassements de délai et les échecs DNS et TLS sont eux aussi des erreurs, jamais un succès vide. Un dépassement de délai produit
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` avec le code `API_28` ;
-  les autres échecs de transport produisent `Curl error during request: ...` (les numéros d'erreur curl sont conservés afin que
-  les codes correspondent à php-dna ; `getParsedResponseData()` les affiche sous la forme `CURL_<n>`).
-- Les vérifications effectuées par la bibliothèque utilisent leurs propres codes : `RESPONSE` (réponse vide), `DOMAIN_RENEW`,
+- Les dépassements de délai et les échecs DNS et TLS sont eux aussi des erreurs, jamais un succès vide. Leur code est
+  `CURL_<n>` avec les numéros d'erreur de curl, comme dans php-dna : un dépassement de délai donne `CURL_28` et produit
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)` ; les autres échecs de transport
+  (`CURL_6` DNS, `CURL_7` connexion refusée, `CURL_35`/`CURL_60` TLS, `CURL_56` connexion réinitialisée)
+  produisent `Curl error during request: ...`.
+- Un refus de la passerelle (`"success": false`) renvoie `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` ou
+  `RENEW_DOMAIN` avec le message de la passerelle.
+- Les vérifications effectuées par la bibliothèque utilisent leurs propres codes : `RESPONSE` (réponse vide), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Diagnostics du dernier appel :

@@ -222,6 +222,8 @@ dna.registerWithContactInfo("example.com.tr", 1, contacts,
 }
 ```
 تُجيب نقطة نهاية التسجيل بإيصال مختصر؛ استدعِ `getDetails` بعد ذلك للحصول على السجل الكامل.
+عندما ترفض البوابة الطلب (`"success": false`)، تكون النتيجة خطأً بالرمز
+`REGISTER_DOMAIN` مع رسالة البوابة.
 </details>
 
 ### تجديد النطاق
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+يُعيد التجديد المرفوض خطأً بالرمز `RENEW_DOMAIN`.
 </details>
 
 ### نقل النطاق
 
 ```java
+// لا تُرسَل جهات الاتصال أبدًا مع النقل: يتسلّمها المسجِّل مع النطاق
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // تحقّق أولًا مما إذا كان يمكن نقل النطاق باستخدام رمز التفويض هذا
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // صادرة
 <details>
 <summary>مثال على المخرجات</summary>
 
-تُعيد `transfer` البنية نفسها التي يُعيدها التسجيل. أما `checkTransfer`:
+تُعيد `transfer` البنية نفسها التي يُعيدها التسجيل (أو خطأً بالرمز `TRANSFER_DOMAIN` عندما
+ترفض البوابة النقل). أما `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### تعديل خصوصية النطاق
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// يمكن أن تكون الحالة نصًا أيضًا كما تخزّنها لوحات التحكم: القيم "1", "true", "on", "yes" تُفعّلها
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+يُقبَل الوسيط الثالث الاختياري (`reason`) للتوافق مع php-dna لكنه لا يُرسَل، إذ لا تحتوي
+البوابة على حقل كهذا.
 
 <details>
 <summary>مثال على المخرجات</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+تُطابَق أنواع جهات الاتصال دون تمييز بين الأحرف الكبيرة والصغيرة (`Admin`/`Administrative`، `Tech`/`Technical`،
+`Registrant`/`Owner`، `Billing`)؛ ويُحتفَظ بأي نوع آخر يُعيده السجل بعد هذه الأنواع الأربعة.
 تُعيد `saveContacts` القيمة `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 يمكن أن تكون الأسماء `""` / `"@"` (جذر النطاق)، أو تسمية (`"www"`)، أو اسمًا كاملًا (`"www.example.com."`).
 الأنواع المدعومة: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. قيمة TTL بين
 1 و86400 ثانية. يُحافَظ على فاصل ثانية واحدة على الأقل بين استدعاءات المنطقة لأن البوابة تُجيب
-بـ HTTP 429 على الطلبات المتلاحقة (يمكن تغيير الفاصل عبر `setZoneMinInterval(seconds)`).
+بـ HTTP 429 على الطلبات المتلاحقة (يمكن تغيير الفاصل عبر `setZoneMinInterval(seconds)`). تُبيّن النتائج
+النوع بالأحرف الكبيرة وقيمة TTL بعد حصرها ضمن الحدود المسموحة، كما أُرسلا. وعندما يفشل التطبيق التلقائي، تُعيد عملية الكتابة
+خطأ التطبيق: يكون التغيير مُجهّزًا لكنه لم يُفعَّل بعد.
 
 <details>
 <summary>مثال على المخرجات</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-بدون إعادة توجيه: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+بدون إعادة توجيه (رسالة البوابة `Redirect information not found`):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. أما أي
+خطأ آخر، مثل نطاق غير معروف، فيُعاد كخطأ.
+تُعيد `deleteForwarding` القيمة `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`،
+أو `"Removed": false` عندما لا يكون هناك أي إعادة توجيه مُعيَّنة.
 </details>
 
 ### الحصول على تفاصيل الموزع والرصيد
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY، EUR، GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY، EUR، GBP
     "CurrencySymbol": "$"
 }
 ```
+لا يُبلغ الحساب إلا عن أرصدة USD وTRY. أما بالنسبة للعملات الأخرى (EUR، GBP، ...) فتكون النتيجة
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### أدوات مساعدة (بدون اتصال بالشبكة)
@@ -727,15 +748,20 @@ Map<String, Object> clean = dna.validateContact(raw);
 ```
 
 - قيمة `Code` هي `API_<HTTP status>` لأخطاء البوابة (`API_400`، `API_404`، `API_429`، `API_500`، ...).
-  الإجابة بـ 301/302 تعني بيانات اعتماد خاطئة (`Invalid API credentials`).
+  عندما ترسل البوابة رمز خطأ خاصًا بها، يُحتفَظ به في `GatewayCode`
+  (مثل `"GatewayCode": "Dna.DomainService:Domain:10007"`)، وبذلك يمكن تمييز "النطاق غير موجود"
+  عن حالات 404 الأخرى. الإجابة بـ 301/302 تعني بيانات اعتماد خاطئة (`Invalid API credentials`).
 - عندما تسرد البوابة أخطاء تحقق خاصة بكل حقل، يذكر `Details` أسماء الحقول، مثل
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - يتحول جسم الخطأ الفارغ إلى رسالة مثل `HTTP 429 - Too Many Requests` وما شابهها.
-- تُعدّ مهلات الانتظار وإخفاقات DNS وTLS أخطاءً أيضًا، ولا تُعاد أبدًا كنجاح فارغ. تكون رسالة انتهاء المهلة
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` مع الرمز `API_28`؛
-  أما إخفاقات النقل الأخرى فتكون بالصيغة `Curl error during request: ...` (يُحتفظ بأرقام أخطاء curl كي
-  تتطابق الرموز مع php-dna؛ وتعرضها `getParsedResponseData()` بالصيغة `CURL_<n>`).
-- تستخدم عمليات التحقق داخل المكتبة رموزها الخاصة: `RESPONSE` (إجابة فارغة)، `DOMAIN_RENEW`،
+- تُعدّ مهلات الانتظار وإخفاقات DNS وTLS أخطاءً أيضًا، ولا تُعاد أبدًا كنجاح فارغ. رمزها هو
+  `CURL_<n>` بأرقام أخطاء curl، كما في php-dna: انتهاء المهلة هو `CURL_28` ورسالته
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`؛ أما إخفاقات النقل الأخرى
+  (`CURL_6` لـ DNS، و`CURL_7` لرفض الاتصال، و`CURL_35`/`CURL_60` لـ TLS، و`CURL_56` لإعادة تعيين الاتصال)
+  فتكون بالصيغة `Curl error during request: ...`.
+- يُعيد رفض البوابة (`"success": false`) الرمز `REGISTER_DOMAIN` أو `TRANSFER_DOMAIN` أو
+  `RENEW_DOMAIN` مع رسالة البوابة.
+- تستخدم عمليات التحقق داخل المكتبة رموزها الخاصة: `RESPONSE` (إجابة فارغة)، `DOMAIN_RENEW`، `BALANCE`،
   `TRANSFER_NOT_AVAILABLE`، `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`، `SET_FORWARD`، `AVAILABILITY`.
 
 البيانات التشخيصية لآخر استدعاء:

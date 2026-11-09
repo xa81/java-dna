@@ -222,6 +222,8 @@ aangevuld en genormaliseerd (zie `validateContact`).
 }
 ```
 Het registratie-endpoint antwoordt met een korte bevestiging; roep daarna `getDetails` aan voor het volledige record.
+Wanneer de gateway de bestelling weigert (`"success": false`), is het resultaat een fout met code
+`REGISTER_DOMAIN` en de melding van de gateway.
 </details>
 
 ### Domeinverlenging
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+Een geweigerde verlenging retourneert een fout met code `RENEW_DOMAIN`.
 </details>
 
 ### Domeintransfer
 
 ```java
+// Bij een transfer worden nooit contactgegevens verzonden: de registrar neemt ze met het domein over
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Controleer eerst of het domein met deze autorisatiecode kan worden getransfereerd
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // uitgaand
 <details>
 <summary>Voorbeelduitvoer</summary>
 
-`transfer` retourneert dezelfde structuur als de registratie. `checkTransfer`:
+`transfer` retourneert dezelfde structuur als de registratie (een fout met code `TRANSFER_DOMAIN` wanneer
+de gateway de transfer weigert). `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Domeinprivacy wijzigen
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// De status mag ook tekst zijn, zoals panels hem opslaan: "1", "true", "on", "yes" schakelen in
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+Het optionele derde argument (`reason`) wordt geaccepteerd voor compatibiliteit met php-dna, maar niet verzonden:
+de gateway kent zo'n veld niet.
 
 <details>
 <summary>Voorbeelduitvoer</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+Contacttypen worden hoofdletterongevoelig gekoppeld (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`); elk ander type dat de registry retourneert, blijft na deze vier behouden.
 `saveContacts` retourneert `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 Namen kunnen `""` / `"@"` (apex), een label (`"www"`) of een volledige naam (`"www.example.com."`) zijn.
 Ondersteunde typen: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. De TTL is
 1..86400 seconden. Tussen zone-aanroepen zit minstens één seconde, omdat de gateway op snelle reeksen verzoeken
-antwoordt met HTTP 429 (`setZoneMinInterval(seconds)` wijzigt de tussenpoos).
+antwoordt met HTTP 429 (`setZoneMinInterval(seconds)` wijzigt de tussenpoos). De resultaten melden het verzonden type
+in hoofdletters en de begrensde TTL. Mislukt de automatische apply, dan retourneert de schrijfactie de
+apply-fout: de wijziging staat klaar, maar is nog niet live.
 
 <details>
 <summary>Voorbeelduitvoer</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Zonder doorsturing: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Zonder doorsturing (`Redirect information not found` van de gateway):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Elke andere
+fout, zoals een onbekend domein, wordt als fout geretourneerd.
+`deleteForwarding` retourneert `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`,
+of `"Removed": false` wanneer er niets was ingesteld.
 </details>
 
 ### Resellerdetails en saldo ophalen
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+Het account meldt alleen USD- en TRY-saldi. Voor andere valuta (EUR, GBP, ...) is het resultaat
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Hulpfuncties (zonder netwerk)
@@ -727,15 +748,20 @@ Netwerkmethoden gooien nooit een exceptie bij API- of netwerkproblemen; ze retou
 ```
 
 - `Code` is `API_<HTTP-status>` bij gatewayfouten (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  Een antwoord met 301/302 betekent onjuiste inloggegevens (`Invalid API credentials`).
+  Wanneer de gateway een eigen foutcode stuurde, blijft die behouden als `GatewayCode`
+  (bijv. `"GatewayCode": "Dna.DomainService:Domain:10007"`), zodat "domein niet gevonden" te onderscheiden is
+  van andere 404's. Een antwoord met 301/302 betekent onjuiste inloggegevens (`Invalid API credentials`).
 - Wanneer de gateway validatiefouten per veld vermeldt, noemt `Details` de betreffende velden, bijvoorbeeld
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - Een lege foutbody wordt `HTTP 429 - Too Many Requests` en vergelijkbaar.
-- Time-outs en DNS- en TLS-storingen zijn ook fouten, nooit een leeg succes. Een time-out luidt
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` met code `API_28`;
-  andere transportfouten luiden `Curl error during request: ...` (de curl-foutnummers blijven behouden zodat
-  de codes overeenkomen met php-dna; `getParsedResponseData()` toont ze als `CURL_<n>`).
-- Controles aan de kant van de bibliotheek gebruiken eigen codes: `RESPONSE` (leeg antwoord), `DOMAIN_RENEW`,
+- Time-outs en DNS- en TLS-storingen zijn ook fouten, nooit een leeg succes. Hun code is
+  `CURL_<n>` met het curl-foutnummer, zoals in php-dna: een time-out is `CURL_28` en luidt
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`; andere transportfouten
+  (`CURL_6` DNS, `CURL_7` verbinding geweigerd, `CURL_35`/`CURL_60` TLS, `CURL_56` verbinding verbroken)
+  luiden `Curl error during request: ...`.
+- Een weigering door de gateway (`"success": false`) retourneert `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` of
+  `RENEW_DOMAIN` met de melding van de gateway.
+- Controles aan de kant van de bibliotheek gebruiken eigen codes: `RESPONSE` (leeg antwoord), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Diagnostische gegevens van de laatste aanroep:

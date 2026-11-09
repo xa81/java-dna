@@ -222,6 +222,8 @@ prima dell'invio (vedi `validateContact`).
 }
 ```
 L'endpoint di registrazione risponde con una breve ricevuta; chiama poi `getDetails` per ottenere il record completo.
+Quando il gateway rifiuta l'ordine (`"success": false`), il risultato è un errore con codice
+`REGISTER_DOMAIN` e il messaggio del gateway.
 </details>
 
 ### Rinnovo del Dominio
@@ -236,11 +238,13 @@ Map<String, Object> result = dna.renew("example.com", 1);
 ```json
 {"result": "OK", "data": {"ExpirationDate": "2027-11-09T12:00:00"}}
 ```
+Un rinnovo rifiutato restituisce un errore con codice `RENEW_DOMAIN`.
 </details>
 
 ### Trasferimento del Dominio
 
 ```java
+// I contatti non vengono mai inviati con un trasferimento: il registrar li acquisisce insieme al dominio
 Map<String, Object> result = dna.transfer("example.com", "Xjk9Vtr2", 1);
 
 // Verifica prima se il dominio può essere trasferito con questo codice di autorizzazione
@@ -255,7 +259,8 @@ dna.rejectTransfer("example.com");   // in uscita
 <details>
 <summary>Output di Esempio</summary>
 
-`transfer` restituisce la stessa struttura della registrazione. `checkTransfer`:
+`transfer` restituisce la stessa struttura della registrazione (un errore con codice `TRANSFER_DOMAIN` quando il
+gateway rifiuta il trasferimento). `checkTransfer`:
 
 ```json
 {
@@ -499,8 +504,14 @@ dna.deleteChildNameServer("example.com", "ns1.example.com");
 ### Modificare la Protezione Privacy del Dominio
 
 ```java
-Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true, "Owner request");
+Map<String, Object> result = dna.modifyPrivacyProtectionStatus("example.com", true);
+
+// Lo stato può essere anche testo, come lo memorizzano i pannelli: "1", "true", "on", "yes" lo attivano
+dna.modifyPrivacyProtectionStatus("example.com", "off");
 ```
+
+Il terzo argomento facoltativo (`reason`) è accettato per compatibilità con php-dna, ma non viene inviato: il
+gateway non prevede questo campo.
 
 <details>
 <summary>Output di Esempio</summary>
@@ -562,6 +573,8 @@ Map<String, Object> saved = dna.saveContacts("example.com", contacts);
     "result": "OK"
 }
 ```
+I tipi di contatto vengono confrontati senza distinzione tra maiuscole e minuscole (`Admin`/`Administrative`, `Tech`/`Technical`,
+`Registrant`/`Owner`, `Billing`); qualsiasi altro tipo restituito dal registro viene mantenuto dopo questi quattro.
 `saveContacts` restituisce `{"result": "OK", "data": {"contacts": {...}}}`.
 </details>
 
@@ -594,7 +607,9 @@ dna.applyResourceRecords("example.com");
 I nomi possono essere `""` / `"@"` (apex), un'etichetta (`"www"`) o un nome completo (`"www.example.com."`).
 Tipi supportati: `A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT`. Il TTL va da
 1 a 86400 secondi. Le chiamate alla zona vengono distanziate di almeno un secondo, perché il gateway risponde
-HTTP 429 alle raffiche di richieste (`setZoneMinInterval(seconds)` modifica l'intervallo).
+HTTP 429 alle raffiche di richieste (`setZoneMinInterval(seconds)` modifica l'intervallo). I risultati riportano il
+tipo in maiuscolo e il TTL ricondotto ai limiti, così come sono stati inviati. Se l'applicazione automatica non riesce, la scrittura
+restituisce l'errore di applicazione: la modifica è predisposta ma non ancora attiva.
 
 <details>
 <summary>Output di Esempio</summary>
@@ -631,7 +646,11 @@ dna.deleteForwarding("example.com");
 ```json
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org", "ForwardType": "Frame"}}
 ```
-Senza inoltro: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`.
+Senza inoltro (il messaggio `Redirect information not found` del gateway):
+`{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. Qualsiasi altro
+errore, ad esempio un dominio sconosciuto, viene restituito come errore.
+`deleteForwarding` restituisce `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`,
+oppure `"Removed": false` se non era impostato nulla.
 </details>
 
 ### Ottenere Dettagli e Saldo del Rivenditore
@@ -656,7 +675,7 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "symbol": "$",
     "balances": [
         {"balance": "601.64", "currency": "USD", "symbol": "$"},
-        {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+        {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
     ]
 }
 ```
@@ -673,6 +692,8 @@ Map<String, Object> tl  = dna.getCurrentBalance("TRY");   // TRY, EUR, GBP
     "CurrencySymbol": "$"
 }
 ```
+L'account riporta solo i saldi in USD e TRY. Per le altre valute (EUR, GBP, ...) il risultato è
+`{"ErrorCode": "BALANCE", "OperationResult": "FAILED", "OperationMessage": "No EUR balance is reported for this account. Available: USD, TRY.", "Balance": "0.00", ...}`.
 </details>
 
 ### Utilità (senza rete)
@@ -727,15 +748,20 @@ I metodi di rete non sollevano mai eccezioni per problemi dell'API o della rete;
 ```
 
 - `Code` è `API_<stato HTTP>` per gli errori del gateway (`API_400`, `API_404`, `API_429`, `API_500`, ...).
-  Una risposta 301/302 indica credenziali errate (`Invalid API credentials`).
+  Quando il gateway ha inviato un proprio codice di errore, questo viene mantenuto in `GatewayCode`
+  (ad es. `"GatewayCode": "Dna.DomainService:Domain:10007"`), così "dominio non trovato" si distingue
+  dagli altri 404. Una risposta 301/302 indica credenziali errate (`Invalid API credentials`).
 - Quando il gateway elenca errori di validazione per singolo campo, `Details` indica i campi interessati, ad esempio
   `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
 - Un corpo di errore vuoto diventa `HTTP 429 - Too Many Requests` o un messaggio simile.
-- Anche timeout, errori DNS e TLS sono errori, mai un successo vuoto. Un timeout restituisce
-  `Could not reach the DomainNameAPI service: the connection timed out. (...)` con il codice `API_28`;
-  gli altri errori di trasporto restituiscono `Curl error during request: ...` (i numeri di errore curl vengono mantenuti affinché
-  i codici corrispondano a php-dna; `getParsedResponseData()` li mostra come `CURL_<n>`).
-- I controlli eseguiti dalla libreria usano codici propri: `RESPONSE` (risposta vuota), `DOMAIN_RENEW`,
+- Anche timeout, errori DNS e TLS sono errori, mai un successo vuoto. Il loro codice è
+  `CURL_<n>` con i numeri di errore di curl, come in php-dna: un timeout è `CURL_28` e restituisce
+  `Could not reach the DomainNameAPI service: the connection timed out. (...)`; gli altri errori di trasporto
+  (`CURL_6` DNS, `CURL_7` connessione rifiutata, `CURL_35`/`CURL_60` TLS, `CURL_56` connessione reimpostata)
+  restituiscono `Curl error during request: ...`.
+- Un rifiuto del gateway (`"success": false`) restituisce `REGISTER_DOMAIN`, `TRANSFER_DOMAIN` o
+  `RENEW_DOMAIN` con il messaggio del gateway.
+- I controlli eseguiti dalla libreria usano codici propri: `RESPONSE` (risposta vuota), `DOMAIN_RENEW`, `BALANCE`,
   `TRANSFER_NOT_AVAILABLE`, `ADD_ZONE` / `EDIT_ZONE` / `SET_ZONE` / `DELETE_ZONE`, `SET_FORWARD`, `AVAILABILITY`.
 
 Diagnostica dell'ultima chiamata:
